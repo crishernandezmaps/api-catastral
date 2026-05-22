@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import get_pool, close_pool
-from app.routers import predios
+from app.routers import predios, cbr
 
 
 @asynccontextmanager
@@ -32,6 +32,7 @@ app.add_middleware(
 )
 
 app.include_router(predios.router, tags=["Predios"])
+app.include_router(cbr.router)
 
 
 @app.get("/health", tags=["Sistema"])

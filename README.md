@@ -1,6 +1,6 @@
 # API Catastral Chile
 
-API REST para consulta del catastro de bienes raíces del SII (Servicio de Impuestos Internos) de Chile. Expone **10.5 millones de predios** de las **347 comunas** del país, consultables por rol SII (comuna / manzana / predio).
+API REST para consulta del catastro SII y transacciones CBR (Conservador de Bienes Raíces) de Chile. Expone **10.5 millones de predios** de las **347 comunas** del país y **3.1 millones de escrituras** de compraventa (2000–2026).
 
 **Base URL:** `https://api.catastral.cl`  
 **Documentación interactiva:** `https://api.catastral.cl/docs`
@@ -13,13 +13,14 @@ API REST para consulta del catastro de bienes raíces del SII (Servicio de Impue
 2. [Stack técnico](#stack-técnico)
 3. [Estructura del proyecto](#estructura-del-proyecto)
 4. [Datos disponibles](#datos-disponibles)
-5. [Endpoints](#endpoints)
-6. [Esquema de respuesta](#esquema-de-respuesta)
-7. [Códigos de referencia SII](#códigos-de-referencia-sii)
-8. [Casos de uso](#casos-de-uso)
-9. [Setup local](#setup-local)
-10. [Deploy](#deploy)
-11. [Importación de datos](#importación-de-datos)
+5. [Endpoints — SII Catastral](#endpoints--sii-catastral)
+6. [Endpoints — CBR Transacciones](#endpoints--cbr-transacciones)
+7. [Esquema de respuesta](#esquema-de-respuesta)
+8. [Códigos de referencia SII](#códigos-de-referencia-sii)
+9. [Casos de uso](#casos-de-uso)
+10. [Setup local](#setup-local)
+11. [Deploy](#deploy)
+12. [Importación de datos](#importación-de-datos)
 
 ---
 
@@ -35,7 +36,7 @@ Cloudflare (proxy + SSL)
 Nginx (api.catastral.cl → 127.0.0.1:8003)
     │
     ▼
-FastAPI / Uvicorn (4 workers, puerto 8003)
+FastAPI / Uvicorn (2 workers, puerto 8003)
     │
     ▼
 asyncpg connection pool (min 5, max 20)
@@ -43,11 +44,14 @@ asyncpg connection pool (min 5, max 20)
     ▼
 PostgreSQL 16 + PostGIS (Docker, puerto 5435)
     │
-    └── tabla: catastro_actual
-         índices: (comuna, manzana, predio) · dirección GIN · geom GIST
+    ├── tabla: catastro_actual     (10.5M predios SII)
+    │    índices: (comuna, manzana, predio) · dirección GIN · geom GIST · h3_8
+    │
+    └── tabla: cbr_escrituras      (3.1M escrituras CBR)
+         índices: (comuna_codigo, manzana, predio) · fecha · comuna+fecha
 ```
 
-La API es **stateless** y **read-only**: solo realiza `SELECT` contra la base de datos. No tiene caché adicional porque PostgreSQL con los índices responde en < 5 ms para consultas por rol.
+La API es **stateless** y **read-only**: solo realiza `SELECT`. PostgreSQL responde en < 5 ms para consultas por rol.
 
 ---
 
@@ -56,12 +60,13 @@ La API es **stateless** y **read-only**: solo realiza `SELECT` contra la base de
 | Componente | Tecnología |
 |---|---|
 | Framework API | FastAPI 0.115 |
-| Servidor ASGI | Uvicorn 0.30 (4 workers) |
+| Servidor ASGI | Uvicorn 0.30 (2 workers) |
 | Driver DB | asyncpg (async, sin ORM) |
 | Base de datos | PostgreSQL 16 + PostGIS 3.5 (Docker) |
+| Índice espacial | H3 nivel 8 (resolución ~460m radio) |
 | Validación | Pydantic v2 |
 | Proxy / SSL | Nginx + Cloudflare |
-| Infraestructura | Hetzner VPS (32 vCPU, 122 GB RAM) |
+| Infraestructura | Hetzner VPS (8 GB RAM, Helsínki) |
 
 ---
 
@@ -74,13 +79,17 @@ api_catastral/
 │   ├── config.py         # Settings via pydantic-settings + .env
 │   ├── database.py       # asyncpg connection pool
 │   ├── routers/
-│   │   └── predios.py    # Todos los endpoints
+│   │   ├── predios.py    # Endpoints SII catastral
+│   │   └── cbr.py        # Endpoints CBR transacciones
 │   └── schemas/
-│       └── predio.py     # Modelos Pydantic de request/response
+│       ├── predio.py     # Modelos Pydantic SII
+│       └── cbr.py        # Modelos Pydantic CBR
 ├── scripts/
+│   ├── etl_cbr.py        # ETL: CSV escrituras CBR → cbr_escrituras.csv normalizado
+│   ├── compute_h3.py     # Calcula índice H3-8 para predios con coordenadas
+│   ├── schema_cbr.sql    # DDL tabla cbr_escrituras + índices + columna h3_8
 │   ├── import_csv.sh     # Importación masiva del CSV SII (COPY + upsert)
-│   ├── deploy.sh         # Deploy al VPS vía rsync + SSH
-│   └── nginx_api_catastral.conf  # Config nginx para api.catastral.cl
+│   └── nginx_api_catastral.conf
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -90,12 +99,12 @@ api_catastral/
 
 ## Datos disponibles
 
-**Fuente:** Catastro de Bienes Raíces SII Chile — Segundo Semestre 2025  
-**Cobertura:** 347 comunas, todas las regiones de Chile  
-**Total predios:** 10.538.227  
-**Actualización:** Manual, al recibir nuevo CSV del SII
+### SII Catastral
 
-### Campos disponibles por predio
+**Fuente:** SII — Segundo Semestre 2025  
+**Cobertura:** 347 comunas, todas las regiones  
+**Total predios:** 10.538.227  
+**Con coordenadas (H3):** 1.130.502 predios geocodificados
 
 | Grupo | Campos |
 |---|---|
@@ -103,26 +112,31 @@ api_catastral/
 | **Rol Catastral (RC)** | `rc_direccion`, `rc_serie`, `rc_ind_aseo`, `rc_cuota_trimestral`, `rc_avaluo_total`, `rc_avaluo_exento`, `rc_anio_term_exencion`, `rc_cod_ubicacion`, `rc_cod_destino` |
 | **Datos Catastrales (DC)** | `dc_direccion`, `dc_avaluo_fiscal`, `dc_contribucion_semestral`, `dc_cod_destino`, `dc_avaluo_exento`, `dc_sup_terreno`, `dc_cod_ubicacion` |
 | **Predios relacionados** | `dc_bc1_*`, `dc_bc2_*` (bienes comunes), `dc_padre_*` (predio padre en condominios) |
-| **Construcción** | `n_lineas_construccion`, `sup_construida_total`, `anio_construccion_min`, `anio_construccion_max`, `materiales`, `calidades`, `pisos_max`, `serie` |
-| **Georeferencia** | `lat`, `lon` (disponible para predios geocodificados) |
+| **Construcción** | `n_lineas_construccion`, `sup_construida_total`, `anio_construccion_min/max`, `materiales`, `calidades`, `pisos_max`, `serie` |
+| **Georeferencia** | `lat`, `lon`, `h3_8` (hexágono H3 nivel 8) |
+
+### CBR Transacciones
+
+**Fuente:** Conservador de Bienes Raíces — Escrituras de compraventa  
+**Período:** 2000–2026 (volumen significativo desde 2018)  
+**Total escrituras:** 3.119.383  
+**Cobertura:** 346 comunas
+
+| Campo | Descripción |
+|---|---|
+| `fecha` | Fecha de la escritura |
+| `monto_pesos` | Monto en pesos chilenos (cuando disponible) |
+| `monto_uf` | Monto en UF (cuando disponible) |
+
+> **Nota:** El tipo de propiedad no está en el archivo CBR original. Se obtiene cruzando con `catastro_actual` a través del rol (comuna / manzana / predio).
 
 ---
 
-## Endpoints
+## Endpoints — SII Catastral
 
 ### `GET /predio/{comuna}/{manzana}/{predio}`
 
-Retorna todos los datos SII del rol identificado por la terna **(comuna, manzana, predio)**.
-
-**Parámetros**
-
-| Parámetro | Tipo | Descripción |
-|---|---|---|
-| `comuna` | integer | Código SII de la comuna (ej: `15103` = Providencia) |
-| `manzana` | integer | Número de manzana SII |
-| `predio` | integer | Número de predio SII |
-
-**Ejemplo**
+Retorna todos los datos SII del rol indicado.
 
 ```bash
 curl https://api.catastral.cl/predio/15103/933/810
@@ -134,43 +148,18 @@ curl https://api.catastral.cl/predio/15103/933/810
 {
   "id": 1726674,
   "periodo": "PRIMER SEMESTRE DE 2026",
-  "anio": 2025,
-  "semestre": 2,
   "comuna": 15103,
   "manzana": 933,
   "predio": 810,
   "rc_direccion": "SUECIA 283 BX 41 4SB",
-  "rc_serie": "N",
-  "rc_avaluo_total": 5941127,
-  "rc_avaluo_exento": 0,
-  "rc_cod_ubicacion": "URBANA",
   "rc_cod_destino": "ESTACIONAMIENTO",
-  "dc_direccion": "SUECIA 283 BX 41",
   "dc_avaluo_fiscal": 5853327,
   "dc_contribucion_semestral": 31228,
-  "dc_cod_destino": "Z",
-  "dc_sup_terreno": 0.0,
-  "dc_bc1_comuna": 15103,
-  "dc_bc1_manzana": 933,
-  "dc_bc1_predio": 90708,
-  "n_lineas_construccion": 1,
   "sup_construida_total": 13.0,
-  "anio_construccion_min": 2022,
-  "anio_construccion_max": 2022,
-  "materiales": "B",
-  "calidades": "4",
   "pisos_max": 12,
-  "serie": "N",
   "lat": -33.423417,
-  "lon": -70.607202
-}
-```
-
-**Respuesta `404`**
-
-```json
-{
-  "detail": "Predio no encontrado: comuna=15103, manzana=999, predio=999"
+  "lon": -70.607202,
+  "h3_8": "88b2c55699fffff"
 }
 ```
 
@@ -180,125 +169,212 @@ curl https://api.catastral.cl/predio/15103/933/810
 
 Búsqueda por texto en dirección dentro de una comuna.
 
-**Query params**
-
 | Parámetro | Tipo | Requerido | Descripción |
 |---|---|---|---|
-| `q` | string | Sí | Texto a buscar (mínimo 3 caracteres) |
+| `q` | string | Sí | Texto a buscar (mín. 3 caracteres) |
 | `comuna` | integer | Sí | Código SII de la comuna |
-| `limit` | integer | No | Máximo resultados (1–50, default 20) |
-
-**Ejemplo**
+| `limit` | integer | No | Máx. resultados (1–50, default 20) |
 
 ```bash
-curl "https://api.catastral.cl/buscar?q=SUECIA&comuna=15103&limit=3"
+curl "https://api.catastral.cl/buscar?q=SUECIA&comuna=15103&limit=5"
 ```
-
-**Respuesta `200 OK`** — lista de predios que coinciden con la dirección.
 
 ---
 
 ### `GET /comunas`
 
-Lista todas las comunas disponibles con su conteo de predios.
-
-**Ejemplo**
+Lista todas las comunas con su conteo de predios.
 
 ```bash
 curl https://api.catastral.cl/comunas
-```
-
-**Respuesta `200 OK`**
-
-```json
-[
-  {
-    "codigo": 2201,
-    "nombre": "Antofagasta",
-    "region": "Antofagasta",
-    "total_predios": 174730
-  },
-  {
-    "codigo": 15103,
-    "nombre": "Providencia",
-    "region": "Metropolitana",
-    "total_predios": 214396
-  }
-]
 ```
 
 ---
 
 ### `GET /comuna/{codigo}/predios`
 
-Lista paginada de todos los predios de una comuna.
+Lista paginada de predios de una comuna.
 
-**Parámetros**
-
-| Parámetro | Tipo | Descripción |
-|---|---|---|
-| `codigo` | integer | Código SII de la comuna |
-| `offset` | integer | Desplazamiento (default 0) |
-| `limit` | integer | Resultados por página (1–500, default 100) |
-
-**Ejemplo**
+| Parámetro | Descripción |
+|---|---|
+| `offset` | Desplazamiento (default 0) |
+| `limit` | Resultados por página (1–500, default 100) |
 
 ```bash
-curl "https://api.catastral.cl/comuna/15103/predios?limit=10&offset=0"
+curl "https://api.catastral.cl/comuna/15103/predios?limit=10"
 ```
 
 ---
 
 ### `GET /stats`
 
-Estadísticas generales de la base de datos.
-
-**Ejemplo**
-
 ```bash
 curl https://api.catastral.cl/stats
-```
-
-**Respuesta `200 OK`**
-
-```json
-{
-  "total_predios": 10538227,
-  "total_comunas": 347,
-  "periodo_actual": "PRIMER SEMESTRE DE 2026",
-  "db_size_mb": 4515.8
-}
+# {"total_predios":10538227,"total_comunas":347,"periodo_actual":"PRIMER SEMESTRE DE 2026","db_size_mb":5059.0}
 ```
 
 ---
 
 ### `GET /health`
 
-Health check del servicio.
-
 ```bash
 curl https://api.catastral.cl/health
-# {"status": "ok"}
+# {"status":"ok"}
+```
+
+---
+
+## Endpoints — CBR Transacciones
+
+### `GET /cbr/rol/{comuna}/{manzana}/{predio}`
+
+Historial completo de escrituras de compraventa para un rol específico.
+
+```bash
+curl https://api.catastral.cl/cbr/rol/5406/1/9
+```
+
+**Respuesta `200 OK`**
+
+```json
+{
+  "comuna_codigo": 5406,
+  "manzana": 1,
+  "predio": 9,
+  "total_transacciones": 2,
+  "primera_fecha": "2019-01-21",
+  "ultima_fecha": "2021-12-23",
+  "ultimo_monto_uf": 4620.07,
+  "ultimo_monto_pesos": 143000000,
+  "escrituras": [
+    { "id": 3, "fecha": "2021-12-23", "monto_pesos": 143000000, "monto_uf": 4620.07 },
+    { "id": 2, "fecha": "2019-01-21", "monto_pesos": 120000000, "monto_uf": null }
+  ]
+}
+```
+
+**Respuesta `404`** — Sin transacciones registradas para ese rol.
+
+---
+
+### `GET /cbr/h3/{comuna}/{manzana}/{predio}`
+
+Estadísticas de transacciones de propiedades en el mismo hexágono H3 nivel 8 (~460m radio), desglosadas por tipo de propiedad. El cliente decide qué tipos mostrar.
+
+**Requiere:** que el predio tenga coordenadas (`lat`/`lon` en catastro_actual).
+
+```bash
+curl https://api.catastral.cl/cbr/h3/15108/105/21
+```
+
+**Respuesta `200 OK`**
+
+```json
+{
+  "h3_index": "88b2c55689fffff",
+  "radio_km": 0.46,
+  "total_transacciones": 1171,
+  "por_tipo": [
+    {
+      "destino": "HABITACIONAL",
+      "total_transacciones": 142,
+      "predios_distintos": 134,
+      "mediana_uf": 6300.0,
+      "promedio_uf": 6733.15,
+      "min_uf": 154.0,
+      "max_uf": 20000.0,
+      "transacciones_12m": 9,
+      "tendencia_pct": -14.3
+    },
+    {
+      "destino": "ESTACIONAMIENTO",
+      "total_transacciones": 883,
+      "predios_distintos": 842,
+      "mediana_uf": 830.0,
+      "promedio_uf": 11789.38,
+      "min_uf": 37.0,
+      "max_uf": 9787794.0,
+      "transacciones_12m": 5,
+      "tendencia_pct": -26.9
+    }
+  ]
+}
+```
+
+**Campos del desglose por tipo**
+
+| Campo | Descripción |
+|---|---|
+| `destino` | Tipo de propiedad según SII (ver tabla de códigos) |
+| `total_transacciones` | Total de escrituras en el hexágono para ese tipo |
+| `predios_distintos` | Número de roles únicos con transacciones |
+| `mediana_uf` | Mediana del precio en UF — más robusta que el promedio ante outliers |
+| `promedio_uf` | Promedio del precio en UF |
+| `min_uf` / `max_uf` | Rango de precios |
+| `transacciones_12m` | Escrituras en los últimos 12 meses (liquidez del mercado) |
+| `tendencia_pct` | % de variación del precio promedio: últimos 12m vs 12m anteriores |
+
+**Respuesta `404`** — Sin transacciones en ese hexágono.  
+**Respuesta `422`** — El predio no tiene coordenadas.
+
+---
+
+### `GET /cbr/cerca`
+
+Predios con su resumen CBR dentro de un radio dado a una coordenada.
+
+| Parámetro | Tipo | Default | Descripción |
+|---|---|---|---|
+| `lat` | float | — | Latitud decimal (ej: `-33.4569`) |
+| `lon` | float | — | Longitud decimal (ej: `-70.6483`) |
+| `radio` | integer | 500 | Radio en metros (50–5000) |
+| `limit` | integer | 100 | Máx. predios a retornar (1–200) |
+
+```bash
+curl "https://api.catastral.cl/cbr/cerca?lat=-33.4569&lon=-70.6483&radio=300&limit=20"
+```
+
+**Respuesta `200 OK`** — Lista de predios ordenada por distancia a la coordenada, cada uno con:
+
+```json
+[
+  {
+    "comuna_codigo": 15103,
+    "manzana": 933,
+    "predio": 810,
+    "direccion": "SUECIA 283 BX 41",
+    "destino": "ESTACIONAMIENTO",
+    "avaluo_fiscal": 5853327,
+    "sup_construida": 13.0,
+    "lat": -33.423417,
+    "lon": -70.607202,
+    "h3_8": "88b2c55699fffff",
+    "total_transacciones": 1,
+    "ultima_fecha": "2023-05-12",
+    "ultimo_monto_uf": 830.0
+  }
+]
 ```
 
 ---
 
 ## Esquema de respuesta
 
-### Campos monetarios
+### Valores monetarios
 
-Todos los valores monetarios están en **pesos chilenos (CLP)** sin decimales:
+| Campo | Unidad | Descripción |
+|---|---|---|
+| `rc_cuota_trimestral` | CLP | Cuota trimestral de contribuciones (Rol de Cobro SII) |
+| `dc_avaluo_fiscal` | CLP | Avalúo fiscal (Detalle Catastral SII) |
+| `dc_contribucion_semestral` | CLP | Contribución semestral teórica |
+| `rc_avaluo_total` | CLP | Avalúo total del Rol de Cobro |
+| `monto_pesos` | CLP | Precio de escritura CBR en pesos |
+| `monto_uf` | UF | Precio de escritura CBR en UF |
 
-| Campo | Descripción |
-|---|---|
-| `rc_avaluo_total` | Avalúo total del rol catastral |
-| `rc_avaluo_exento` | Monto exento de contribuciones |
-| `rc_cuota_trimestral` | Cuota trimestral de contribuciones |
-| `dc_avaluo_fiscal` | Avalúo fiscal asignado por el SII |
-| `dc_contribucion_semestral` | Monto semestral de contribuciones (CBR) |
-| `dc_avaluo_exento` | Avalúo exento en datos catastrales |
+> **Contribución anual real** = `rc_cuota_trimestral × 4`  
+> **Contribución anual estimada** = `dc_contribucion_semestral × 2`
 
-### Campos de superficie
+### Superficies
 
 En metros cuadrados (m²):
 
@@ -311,26 +387,33 @@ En metros cuadrados (m²):
 
 ## Códigos de referencia SII
 
-### `rc_cod_destino` / `dc_cod_destino` — Destino del predio
+### Destino del predio (`rc_cod_destino` / `dc_cod_destino`)
 
-| Código | Descripción |
-|---|---|
-| `H` | Habitacional |
-| `C` | Comercio |
-| `L` | Bodega y almacenaje |
-| `Z` | Estacionamiento |
-| `A` | Agrícola |
-| `E` | Especial |
-| `I` | Industrial |
+El SII usa dos sistemas de codificación según el archivo fuente:
 
-### `rc_cod_ubicacion` / `dc_cod_ubicacion`
+| Código corto | Nombre completo | Descripción |
+|---|---|---|
+| `H` | `HABITACIONAL` | Vivienda |
+| `C` | `COMERCIO` | Comercial |
+| `Z` | `ESTACIONAMIENTO` | Estacionamiento / parking |
+| `L` | `BODEGA Y ALMACENAJE` | Bodega |
+| `O` | `OFICINA` | Oficina |
+| `I` | `INDUSTRIAL` | Industrial |
+| `A` | `AGRICOLA` | Agrícola |
+| `E` | `EDUCACION Y CULTURA` | Educación |
+| `G` | `HOTEL, MOTEL` | Hotelería |
+| `S` | `SITIO ERIAZO` | Sitio sin construir |
+| `V` | — | Vivienda (variante) |
+| `W` | — | Uso mixto / especial |
+
+### Ubicación (`rc_cod_ubicacion` / `dc_cod_ubicacion`)
 
 | Código | Descripción |
 |---|---|
 | `U` | Urbano |
 | `R` | Rural |
 
-### `materiales` — Material de construcción predominante
+### Material de construcción (`materiales`)
 
 | Código | Descripción |
 |---|---|
@@ -338,98 +421,91 @@ En metros cuadrados (m²):
 | `B` | Hormigón / albañilería |
 | `C` | Madera |
 | `E` | Mixto |
-| `K` | Otro |
+| `GE` | Estructura metálica |
 
-### `serie` — Serie SII
+### Serie SII (`serie`)
 
 | Código | Descripción |
 |---|---|
-| `N` | No agrícola (Serie B) |
-| `A` | Agrícola (Serie A) |
+| `N` | No agrícola |
+| `A` | Agrícola |
 
 ---
 
 ## Casos de uso
 
-### 1. Evaluación de inversión inmobiliaria
-
-Obtener el avalúo fiscal y contribuciones reales de una propiedad para calcular el retorno sobre inversión:
+### 1. Historial de precios de un inmueble
 
 ```python
 import httpx
 
-def get_cbr_real(comuna, manzana, predio):
-    r = httpx.get(f"https://api.catastral.cl/predio/{comuna}/{manzana}/{predio}")
-    data = r.json()
-    return {
-        "avaluo_fiscal": data["dc_avaluo_fiscal"],
-        "contribucion_anual": data["dc_contribucion_semestral"] * 2,
-        "superficie_m2": data["sup_construida_total"],
-        "destino": data["rc_cod_destino"],
-    }
+r = httpx.get("https://api.catastral.cl/cbr/rol/15103/933/810")
+data = r.json()
+print(f"Última venta: {data['ultima_fecha']} — {data['ultimo_monto_uf']} UF")
+for e in data["escrituras"]:
+    print(f"  {e['fecha']}: {e['monto_uf']} UF")
 ```
 
-### 2. Enriquecimiento de portales inmobiliarios
+### 2. Comparables de mercado por zona (H3)
 
-Al publicar un listado de propiedad, cruzar con datos SII para mostrar información oficial:
+```python
+# Obtener precios de departamentos en el mismo hexágono que un predio
+r = httpx.get("https://api.catastral.cl/cbr/h3/15103/933/810")
+h3_data = r.json()
+
+# El cliente filtra por el tipo que le interesa
+habitacional = next(
+    (t for t in h3_data["por_tipo"] if "HABITACIONAL" in t["destino"] or t["destino"] == "H"),
+    None
+)
+if habitacional:
+    print(f"Mediana zona: {habitacional['mediana_uf']} UF")
+    print(f"Tendencia 12m: {habitacional['tendencia_pct']}%")
+```
+
+### 3. Mapa de transacciones recientes cerca de un punto
 
 ```bash
-# Buscar predios en una dirección
-curl "https://api.catastral.cl/buscar?q=APOQUINDO+4500&comuna=13101&limit=5"
+# Predios con ventas recientes en 500m alrededor de Plaza Italia
+curl "https://api.catastral.cl/cbr/cerca?lat=-33.4378&lon=-70.6388&radio=500&limit=50"
 ```
 
-### 3. Análisis masivo por comuna
-
-Obtener todos los predios de una comuna para análisis estadístico:
+### 4. Evaluación de inversión inmobiliaria
 
 ```python
-import httpx
+def evaluar_propiedad(comuna, manzana, predio):
+    predio_data = httpx.get(
+        f"https://api.catastral.cl/predio/{comuna}/{manzana}/{predio}"
+    ).json()
+    cbr_data = httpx.get(
+        f"https://api.catastral.cl/cbr/rol/{comuna}/{manzana}/{predio}"
+    ).json()
+    h3_data = httpx.get(
+        f"https://api.catastral.cl/cbr/h3/{comuna}/{manzana}/{predio}"
+    ).json()
 
-def get_all_predios_comuna(codigo_comuna):
-    predios = []
-    offset = 0
-    while True:
-        r = httpx.get(
-            f"https://api.catastral.cl/comuna/{codigo_comuna}/predios",
-            params={"limit": 500, "offset": offset}
-        )
-        batch = r.json()
-        if not batch:
-            break
-        predios.extend(batch)
-        offset += 500
-    return predios
+    return {
+        "avaluo_fiscal": predio_data["dc_avaluo_fiscal"],
+        "contribucion_anual": predio_data["rc_cuota_trimestral"] * 4,
+        "ultima_venta_uf": cbr_data.get("ultimo_monto_uf"),
+        "mediana_zona_uf": next(
+            (t["mediana_uf"] for t in h3_data["por_tipo"] if "HABITACIONAL" in t["destino"]),
+            None
+        ),
+    }
 ```
 
-### 4. Validación de avalúos (catastral.cl)
-
-Contrastar el avalúo fiscal que tiene el sistema propio con el dato oficial del SII:
+### 5. Enriquecimiento de portales inmobiliarios
 
 ```javascript
-const response = await fetch(
-  `https://api.catastral.cl/predio/${comuna}/${manzana}/${predio}`
-);
-const predio = await response.json();
+// Dado un rol, mostrar avalúo + precio de mercado estimado
+const [predio, h3] = await Promise.all([
+  fetch(`https://api.catastral.cl/predio/${c}/${m}/${p}`).then(r => r.json()),
+  fetch(`https://api.catastral.cl/cbr/h3/${c}/${m}/${p}`).then(r => r.json()),
+]);
 
-console.log(`Avalúo fiscal SII: $${predio.dc_avaluo_fiscal.toLocaleString('es-CL')}`);
-console.log(`CBR semestral: $${predio.dc_contribucion_semestral.toLocaleString('es-CL')}`);
-```
-
-### 5. Integración con evaluador Airbnb
-
-Reemplazar el CBR estimado por el valor real del SII:
-
-```python
-def get_cbr_desde_api(comuna_codigo, manzana, predio):
-    r = httpx.get(f"https://api.catastral.cl/predio/{comuna_codigo}/{manzana}/{predio}")
-    if r.status_code == 404:
-        return None  # fallback a estimación
-    data = r.json()
-    return {
-        "cbr_anual_clp": data["dc_contribucion_semestral"] * 2,
-        "avaluo_fiscal": data["dc_avaluo_fiscal"],
-        "exento": data["dc_avaluo_exento"] > 0,
-    }
+const tipo = predio.rc_cod_destino;
+const comparables = h3.por_tipo.find(t => t.destino === tipo || t.destino.startsWith(tipo));
 ```
 
 ---
@@ -445,7 +521,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Editar .env con las credenciales de la base de datos
+# Editar .env con credenciales
 
 uvicorn app.main:app --reload --port 8003
 ```
@@ -467,43 +543,56 @@ DB_POOL_MAX=20
 ## Deploy
 
 ```bash
-./scripts/deploy.sh
+# Sincronizar código al VPS
+rsync -avz --exclude='.git' --exclude='.venv' --exclude='.env' \
+    ./app ./scripts ./requirements.txt \
+    root@46.62.214.65:/opt/api_catastral/
+
+# Reiniciar servicio
+ssh 46.62.214.65 'systemctl restart api-catastral'
 ```
 
-El script sincroniza el código al VPS vía `rsync`, instala dependencias, configura el `.env` y reinicia el servicio.
-
-Para actualizar solo el código:
-
-```bash
-rsync -avz --exclude='.git' --exclude='venv' --exclude='.env' \
-    ./ root@46.62.214.65:/root/api_catastral/
-ssh 46.62.214.65 "pkill -f 'uvicorn app.main' && cd /root/api_catastral && nohup venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8003 --workers 4 > /var/log/api_catastral.log 2>&1 &"
-```
+El servicio `api-catastral.service` (systemd) corre en `/opt/api_catastral/` sobre puerto 8003.  
+**No tocar** `/var/www/catastral.cl/` — esa ruta pertenece al proyecto `catastro/` (catastral.cl).
 
 ---
 
 ## Importación de datos
 
-Para cargar un nuevo CSV del SII:
+### SII Catastral
 
 ```bash
-# En el VPS
-bash /root/api_catastral/scripts/import_csv.sh /ruta/al/nuevo_catastro.csv
+bash scripts/import_csv.sh /ruta/catastro_2025_2.csv
 ```
 
-El script:
-1. Crea una tabla staging `UNLOGGED` (sin WAL, máxima velocidad)
-2. Ejecuta `\COPY` masivo del CSV completo
-3. Hace upsert a `catastro_actual` con `ON CONFLICT DO NOTHING` (preserva datos geocodificados)
-4. Elimina la tabla staging
+El script crea tabla staging → `\COPY` masivo → upsert a `catastro_actual`. ~10–15 min para 9.4M filas.
 
-Tiempo estimado para 9.4M filas: **~10–15 minutos** en el hardware actual.
+### CBR Escrituras
+
+```bash
+# 1. Generar CSV normalizado desde el archivo fuente
+python3 scripts/etl_cbr.py
+
+# 2. Subir al VPS e importar
+scp /tmp/cbr_escrituras.csv root@VPS:/tmp/
+ssh VPS 'psql ... -c "\copy cbr_escrituras ... FROM /tmp/cbr_escrituras.csv CSV HEADER"'
+```
+
+### Índice H3
+
+Después de cargar o actualizar coordenadas en `catastro_actual`:
+
+```bash
+python3 scripts/compute_h3.py
+# Calcula H3 nivel 8 para todos los predios con lat/lon (~20 min para 1.1M predios)
+```
 
 ---
 
 ## Notas
 
-- Los valores monetarios son los del **último período disponible** en el CSV SII.
-- El campo `lat`/`lon` está disponible solo para predios geocodificados por el equipo de catastral.cl (~1.1M predios de RM).
-- La API es de solo lectura. No modifica datos.
-- Sin autenticación por ahora — diseñada para uso interno entre proyectos TREMEN.
+- Los valores monetarios corresponden al **último período SII disponible**.
+- `lat`/`lon`/`h3_8` disponibles para ~1.1M predios geocodificados (principalmente RM).
+- Los endpoints CBR requieren que el rol exista en `cbr_escrituras` — no todos los predios tienen transacciones registradas.
+- La mediana UF es más confiable que el promedio para comparables (el promedio se distorsiona por operaciones societarias de alto valor).
+- API de solo lectura, sin autenticación — uso interno entre proyectos TREMEN.
