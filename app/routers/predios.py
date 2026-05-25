@@ -4,7 +4,7 @@ from app.schemas.predio import Predio, PredioNotFound, ComunaStats, StatsRespons
 
 router = APIRouter()
 
-# Columnas a devolver (excluye geom que es binaria)
+# Columnas a devolver (excluye geom binaria)
 COLS = """
     id, periodo, anio, semestre,
     comuna, manzana, predio,
@@ -19,7 +19,19 @@ COLS = """
     n_lineas_construccion, sup_construida_total,
     anio_construccion_min, anio_construccion_max,
     materiales, calidades, pisos_max, serie,
-    lat, lon
+    lat, lon,
+    eacs, eacano, eacs_descripcion,
+    pp_id, pp_comuna, pp_manzana, pp_predio, pp_utm_x, pp_utm_y,
+    direccion_sii, destino_descripcion, ubicacion, existe_predio,
+    valor_total, valor_afecto, valor_exento, valor_comercial_clp_m2,
+    ah, sector,
+    ah_valor_unitario, ah_rango_superficie, ah_numero_muestras,
+    ah_coef_variacion, ah_mediana, ah_eac, ah_eacano, ah_utm_x, ah_utm_y,
+    csa_sector, csa_clase, csa_valor_unitario,
+    csa_utm_x, csa_utm_y, csa_eac, csa_eacano,
+    rav_codigo_ah, rav_rango_sup, rav_valor_m2,
+    rav_codigo_ah_2, rav_rango_sup_2, rav_valor_m2_2,
+    pol_area_m2
 """
 
 

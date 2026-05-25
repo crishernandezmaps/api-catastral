@@ -60,6 +60,66 @@ class Predio(BaseModel):
     lat: Optional[float]
     lon: Optional[float]
 
+    # === Enriquecimiento sii_extractor (S3) ===
+
+    # EAC (Estudio de Avalúo Catastral)
+    eacs: Optional[int]
+    eacano: Optional[int]
+    eacs_descripcion: Optional[str]
+
+    # Predio publicado (rol canónico en API pública del SII)
+    pp_id: Optional[str]
+    pp_comuna: Optional[int]
+    pp_manzana: Optional[int]
+    pp_predio: Optional[int]
+    pp_utm_x: Optional[float]
+    pp_utm_y: Optional[float]
+
+    # Metadatos SII enriquecidos
+    direccion_sii: Optional[str]
+    destino_descripcion: Optional[str]
+    ubicacion: Optional[str]
+    existe_predio: Optional[bool]
+
+    # Valores publicados
+    valor_total: Optional[int]
+    valor_afecto: Optional[int]
+    valor_exento: Optional[int]
+    valor_comercial_clp_m2: Optional[float]
+
+    # Área Homogénea (AH) — peer group de tasación
+    ah: Optional[str]
+    sector: Optional[str]
+    ah_valor_unitario: Optional[float]
+    ah_rango_superficie: Optional[str]
+    ah_numero_muestras: Optional[int]
+    ah_coef_variacion: Optional[float]
+    ah_mediana: Optional[float]
+    ah_eac: Optional[int]
+    ah_eacano: Optional[int]
+    ah_utm_x: Optional[float]
+    ah_utm_y: Optional[float]
+
+    # CSA (Catastro de Suelo Agrícola)
+    csa_sector: Optional[str]
+    csa_clase: Optional[str]
+    csa_valor_unitario: Optional[float]
+    csa_utm_x: Optional[float]
+    csa_utm_y: Optional[float]
+    csa_eac: Optional[int]
+    csa_eacano: Optional[int]
+
+    # RAV (Reavalúo No Agrícola 2022)
+    rav_codigo_ah: Optional[str]
+    rav_rango_sup: Optional[str]
+    rav_valor_m2: Optional[float]
+    rav_codigo_ah_2: Optional[str]
+    rav_rango_sup_2: Optional[str]
+    rav_valor_m2_2: Optional[float]
+
+    # Polígono
+    pol_area_m2: Optional[float]
+
     class Config:
         from_attributes = True
 

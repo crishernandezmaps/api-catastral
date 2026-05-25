@@ -221,23 +221,19 @@ async def get_predios_cerca(
         if not predios:
             return []
 
-        # 2. Obtener todas las escrituras de esos predios en una sola query
+        # 2. Obtener escrituras de esos predios en una sola query.
+        # unnest tres arrays paralelos da un join exacto por tripla (no cartesiano).
         rol_tuples = [(r["comuna_codigo"], r["manzana"], r["predio"]) for r in predios]
         escrituras_rows = await conn.fetch(
             """
-            SELECT id, comuna_codigo, manzana, predio, fecha, monto_pesos, monto_uf
-            FROM cbr_escrituras
-            WHERE (comuna_codigo, manzana, predio) = ANY($1::int[])
-            ORDER BY fecha DESC
-            """,
-            # Pasar como lista de registros usando unnest
-            [(r[0], r[1], r[2]) for r in rol_tuples],
-        ) if False else await conn.fetch(
-            """
-            SELECT id, comuna_codigo, manzana, predio, fecha, monto_pesos, monto_uf
-            FROM cbr_escrituras
-            WHERE comuna_codigo = ANY($1) AND manzana = ANY($2) AND predio = ANY($3)
-            ORDER BY fecha DESC
+            SELECT e.id, e.comuna_codigo, e.manzana, e.predio,
+                   e.fecha, e.monto_pesos, e.monto_uf
+            FROM cbr_escrituras e
+            JOIN unnest($1::int[], $2::int[], $3::int[]) AS r(comuna, manzana, predio)
+              ON e.comuna_codigo = r.comuna
+             AND e.manzana       = r.manzana
+             AND e.predio        = r.predio
+            ORDER BY e.fecha DESC
             """,
             [r[0] for r in rol_tuples],
             [r[1] for r in rol_tuples],

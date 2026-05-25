@@ -27,74 +27,12 @@ def norm(s: str) -> str:
 
 
 def build_lookup(lookup_path: str) -> dict:
-    """Construye dict: nombre_normalizado → codigo_sii."""
+    """Construye dict: nombre_normalizado → codigo_sii.
+
+    Carga primero el lookup oficial (comunas_lookup) y luego añade aliases
+    para nombres que el CBR usa pero el lookup no resuelve.
+    """
     mapping = {}
-    manual = {
-        # Diferencias conocidas CBR → SII
-        "AYSEN":          11101,
-        "CANETE":          8305,
-        "CHEPICA":         6209,
-        "CONCON":          5109,
-        "CON CON":         5109,
-        "COQUIMBO":        4101,
-        "LA FLORIDA":    14130,
-        "LA GRANJA":     14129,
-        "LA PINTANA":    14134,
-        "LA REINA":      14125,
-        "LAS CONDES":    14120,
-        "LO BARNECHEA":  14119,
-        "LO ESPEJO":     14132,
-        "LO PRADO":      14138,
-        "MACUL":         14133,
-        "MAIPU":         14135,
-        "NUNOA":         14122,
-        "ÑUNOA":         14122,
-        "PADRE HURTADO": 14122,
-        "PENAFLOR":      16404,
-        "PENALOLEN":     14131,
-        "PEDRO AGUIRRE CERDA": 14136,
-        "PEÑAFLOR":      16404,
-        "PEÑALOLEN":     14131,
-        "PROVIDENCIA":   14121,
-        "PUDAHUEL":      14137,
-        "QUILICURA":     14118,
-        "QUINTA NORMAL": 14139,
-        "RECOLETA":      14117,
-        "RENCA":         14140,
-        "SAN BERNARDO":  14401,
-        "SAN JOAQUIN":   14126,
-        "SAN MIGUEL":    14128,
-        "SAN RAMON":     14141,
-        "SANTIAGO":      14101,
-        "VITACURA":      14116,
-        "CERRILLOS":     14166,
-        "CERRO NAVIA":   14156,
-        "BUIN":          16403,
-        "CALERA DE TANGO": 16402,
-        "COLINA":        14201,
-        "EL BOSQUE":     14161,
-        "ESTACION CENTRAL": 14127,
-        "ESTACION CENTRAL": 14127,
-        "HUECHURABA":    14115,
-        "INDEPENDENCIA": 14114,
-        "LA CISTERNA":   14162,
-        "LA FLORIDA":    14130,
-        "LA PINTANA":    14134,
-        "TALAGANTE":     14403,
-        "PAINE":         16406,
-        "PADRE LAS CASAS": 9116,
-        "SANTIAGO CENTRO": 14101,
-        "PUERTO NATALES": 12101,
-        "SAN FCO MOSTAZAL": 6104,
-        "SAN FRANCISCO DE MOSTAZAL": 6104,
-        "SAN JOSE MAIPO": 16303,
-        "SAN JOSE DE MAIPO": 16303,
-        "QUINTA TILCOCO": 6117,
-        "QUINTA DE TILCOCO": 6117,
-    }
-    # Load manual overrides
-    for k, v in manual.items():
-        mapping[norm(k)] = v
 
     with open(lookup_path) as f:
         for line in f:
@@ -107,6 +45,22 @@ def build_lookup(lookup_path: str) -> dict:
             except ValueError:
                 continue
             mapping[norm(nombre)] = codigo
+
+    # Aliases que el CBR usa con nombres que no aparecen en comunas_lookup.
+    # Códigos verificados contra comunas_lookup (2026-05): NO modificar sin re-auditar.
+    aliases = {
+        "CON CON":          5309,   # lookup tiene "CONCON" (sin espacio)
+        "SANTIAGO CENTRO": 13101,   # lookup solo tiene "SANTIAGO"
+        "PUERTO NATALES":  12101,   # lookup tiene "NATALES"
+        "SAN FCO MOSTAZAL": 6104,   # lookup tiene "SAN FRANCISCO DE MOSTAZAL"
+        "SAN JOSE MAIPO":  16303,   # lookup tiene "SAN JOSE DE MAIPO"
+        "QUINTA TILCOCO":   6117,   # lookup tiene "QUINTA DE TILCOCO"
+    }
+    for k, v in aliases.items():
+        nk = norm(k)
+        if nk not in mapping:
+            mapping[nk] = v
+
     return mapping
 
 

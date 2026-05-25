@@ -115,6 +115,25 @@ api_catastral/
 | **Construcción** | `n_lineas_construccion`, `sup_construida_total`, `anio_construccion_min/max`, `materiales`, `calidades`, `pisos_max`, `serie` |
 | **Georeferencia** | `lat`, `lon`, `h3_8` (hexágono H3 nivel 8) |
 
+### Enriquecimiento SII (sii_extractor)
+
+**Fuente:** `s3://siipredios/sii_extractor/{NOMBRE}_{CODIGO}/comuna={CODIGO}.parquet`  
+**Origen upstream:** API JSON `getPredioNacional` del SII + capas WMS de áreas homogéneas  
+**Cobertura:** 346 de 347 comunas (Trehuaco 8108 sin enriquecer)
+
+Columnas adicionales que devuelve `/predio/{c}/{m}/{p}` además del bulk SII:
+
+| Grupo | Columnas |
+|---|---|
+| **EAC** (Estudio de Avalúo Catastral) | `eacs`, `eacano`, `eacs_descripcion` |
+| **AH** (Área Homogénea) — peer group de tasación | `ah`, `sector`, `ah_valor_unitario`, `ah_rango_superficie`, `ah_numero_muestras`, `ah_coef_variacion`, `ah_mediana`, `ah_eac`, `ah_eacano`, `ah_utm_x/y` |
+| **CSA** (Catastro Suelo Agrícola) — equivalente AH para predios rurales | `csa_sector`, `csa_clase`, `csa_valor_unitario`, `csa_eac`, `csa_eacano`, `csa_utm_x/y` |
+| **RAV** (Reavalúo No Agrícola 2022) | `rav_codigo_ah`, `rav_rango_sup`, `rav_valor_m2` (+ `_2` para predios que cruzan 2 AH) |
+| **predioPublicado** — rol canónico API pública SII | `pp_id`, `pp_comuna`, `pp_manzana`, `pp_predio`, `pp_utm_x/y` |
+| **Valores publicados** | `valor_total`, `valor_afecto`, `valor_exento`, `valor_comercial_clp_m2` |
+| **Otros** | `direccion_sii`, `destino_descripcion`, `ubicacion`, `existe_predio`, `pol_area_m2` |
+| **Polígono** | Columna `geom` (PostGIS) — no expuesta en JSON, usada por `/cbr/cerca` |
+
 ### CBR Transacciones
 
 **Fuente:** Conservador de Bienes Raíces — Escrituras de compraventa  
@@ -577,6 +596,22 @@ python3 scripts/etl_cbr.py
 scp /tmp/cbr_escrituras.csv root@VPS:/tmp/
 ssh VPS 'psql ... -c "\copy cbr_escrituras ... FROM /tmp/cbr_escrituras.csv CSV HEADER"'
 ```
+
+### Enriquecimiento SII desde S3
+
+```bash
+# 1. Aplicar DDL una sola vez (idempotente)
+psql ... -f scripts/schema_sii_extra.sql
+
+# 2. Descargar 347 parquets desde S3 y hacer UPDATE sobre catastro_actual
+#    Requiere variables S3_ACCESS_KEY, S3_SECRET_KEY, DB_*
+pip install asyncpg boto3 pyarrow
+python3 scripts/import_parquet_s3.py                  # todas las comunas
+python3 scripts/import_parquet_s3.py 13101 5309       # solo algunas
+python3 scripts/import_parquet_s3.py --skip-download  # reusa /tmp/sii_extractor_parquet
+```
+
+Tiempo estimado: 30–60 min para las 347 comunas (~5.8 GB en S3, descarga + UPDATE).
 
 ### Índice H3
 

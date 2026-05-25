@@ -18,7 +18,7 @@ DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5435}"
 DB_NAME="${DB_NAME:-catastro}"
 DB_USER="${DB_USER:-catastro_app}"
-DB_PASSWORD="${DB_PASSWORD:-Catastr0_2026_Tr3m3n!}"
+DB_PASSWORD="${DB_PASSWORD:-Catastr0_2026_Tr3m3n}"
 
 export PGPASSWORD="$DB_PASSWORD"
 PSQL="psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME"
